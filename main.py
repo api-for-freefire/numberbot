@@ -9,7 +9,7 @@ import json
 import pyotp
 import sqlite3
 from datetime import datetime
-from collections import deque
+from collections import deque, Counter
 from flask import Flask
 
 # ================= কনফিগারেশন =================
@@ -25,7 +25,8 @@ STEX_LOGIN_URL = "https://stexsms.com/mapi/v1/mauth/login"
 bot = telebot.TeleBot(BOT_TOKEN)
 AUTH_TOKEN = ""
 posted_console_ids = deque(maxlen=1000)
-range_usage_count = {} 
+recent_fb_logs = deque(maxlen=1000) # নতুন রেঞ্জ লজিকের জন্য
+last_hot_broadcast = {} # ব্রডকাস্ট স্প্যাম কমানোর জন্য
 active_otp_checks = {} 
 db_lock = threading.Lock()
 
@@ -38,7 +39,6 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # ================= ডিকশনারি (Country Data) =================
-# Country Code to Short Name Mapping
 COUNTRY_CODES = {
     "1": "US", "7": "RU", "20": "EG", "27": "ZA", "30": "GR", "31": "NL", "32": "BE", "33": "FR", "34": "ES", "36": "HU", 
     "39": "IT", "40": "RO", "41": "CH", "43": "AT", "44": "GB", "45": "DK", "46": "SE", "47": "NO", "48": "PL", "49": "DE", 
@@ -63,7 +63,6 @@ COUNTRY_CODES = {
     "996": "KG", "998": "UZ"
 }
 
-# Short Name to Details
 SHORT_NAMES = {
     "AF": {"name": "Afghanistan", "flag": "🇦🇫"}, "AL": {"name": "Albania", "flag": "🇦🇱"}, "DZ": {"name": "Algeria", "flag": "🇩🇿"},
     "AD": {"name": "Andorra", "flag": "🇦🇩"}, "AO": {"name": "Angola", "flag": "🇦🇴"}, "AR": {"name": "Argentina", "flag": "🇦🇷"},
@@ -222,7 +221,7 @@ def is_admin(user_id):
 # ================= Force Join & Registration =================
 def check_registered(message):
     if not get_user(message.chat.id):
-        bot.send_message(message.chat.id, "⚠️ দয়া করে আগে /start কমান্ড দিয়ে রেজিস্ট্রেশন করুন।")
+        bot.send_message(message.chat.id, "⚠️ 𝐒𝐞𝐚𝐬𝐬𝐨𝐧 𝐄𝐱𝐩𝐚𝐢𝐫𝐞𝐝 /start কমান্ড দিয়ে 𝐁𝐨𝐭 𝐑𝐮𝐧 করুন।")
         return False
     return True
 
@@ -237,7 +236,7 @@ def check_joined(user_id):
         if ch_id: joined_ch = bot.get_chat_member(ch_id, user_id).status not in ['left', 'kicked']
     except: pass 
     try:
-        if gr_id: joined_gr = bot.get_chat_member(gr_id, user_id).status not in ['left', 'kicked']
+        if gr_id: joined_gr = bot.get_chat_member(gr_id, user_id).status not in['left', 'kicked']
     except: pass
     return joined_ch and joined_gr
 
@@ -253,7 +252,7 @@ def force_join_msg(chat_id):
 def verify_join_callback(call):
     if check_joined(call.message.chat.id):
         bot.delete_message(call.message.chat.id, call.message.message_id)
-        bot.send_message(call.message.chat.id, "✅ ভেরিফিকেশন সফল হয়েছে!", reply_markup=main_menu(call.message.chat.id))
+        bot.send_message(call.message.chat.id, "✅ 𝑽𝒆𝒓𝒊𝒇𝒊𝒄𝒂𝒕𝒊𝒐𝒏 𝑪𝒐𝒎𝒑𝒍𝒆𝒕𝒆!", reply_markup=main_menu(call.message.chat.id))
     else:
         bot.answer_callback_query(call.id, "❌ আপনি এখনো যুক্ত হননি!", show_alert=True)
 
@@ -288,7 +287,7 @@ def get_country_from_range(range_val):
     return "Unknown"
 
 def console_monitor_thread():
-    global range_usage_count
+    global recent_fb_logs, last_hot_broadcast
     while True:
         try:
             res = make_api_request("GET", "https://stexsms.com/mapi/v1/mdashboard/console/info")
@@ -306,33 +305,43 @@ def console_monitor_thread():
                     
                     if "X" not in range_val: range_val += "XXX"
                     
-                    # Auto Update Facebook🔥 Service
+                    # Auto Update Facebook🔥 Service (Dynamic Update Logic)
                     if "facebook" in app_name.lower() or "fb" in app_name.lower():
                         c_code = get_country_from_range(range_val)
                         if c_code != "Unknown":
-                            range_usage_count[range_val] = range_usage_count.get(range_val, 0) + 1
+                            recent_fb_logs.append((c_code, range_val))
+                            
+                            freqs = Counter([r for c, r in recent_fb_logs])
+                            c_code_ranges = set([r for c, r in recent_fb_logs if c == c_code])
                             
                             if c_code not in cfg["services"]["Facebook🔥"]:
-                                cfg["services"]["Facebook🔥"][c_code] = {"name": SHORT_NAMES.get(c_code, {}).get("name", c_code), "flag": SHORT_NAMES.get(c_code, {}).get("flag", "🏳"), "ranges": {}}
+                                cfg["services"]["Facebook🔥"][c_code] = {
+                                    "name": SHORT_NAMES.get(c_code, {}).get("name", c_code), 
+                                    "flag": SHORT_NAMES.get(c_code, {}).get("flag", "🏳"), 
+                                    "ranges": {}
+                                }
                             
-                            c_ranges = cfg["services"]["Facebook🔥"][c_code]["ranges"]
+                            # Sort by frequency and take top 7
+                            sorted_r = sorted(c_code_ranges, key=lambda r: freqs[r], reverse=True)[:7]
+                            new_ranges = {}
                             
-                            is_hot = range_usage_count[range_val] > 10 
-                            r_name = f"🔥 {range_val}" if is_hot else range_val
+                            is_current_hot = False
+                            for r in sorted_r:
+                                is_hot = freqs[r] >= 6  # 6 is the threshold for 🔥
+                                r_name = f"🔥 {r}" if is_hot else r
+                                new_ranges[r_name] = {}
+                                if r == range_val and is_hot:
+                                    is_current_hot = True
                             
-                            if range_val in c_ranges: del c_ranges[range_val]
-                            if f"🔥 {range_val}" in c_ranges: del c_ranges[f"🔥 {range_val}"]
-                            
-                            c_ranges[r_name] = {}
-                            if len(c_ranges) > 7:
-                                sorted_r = sorted(c_ranges.keys(), key=lambda k: range_usage_count.get(k.replace("🔥 ", ""), 0), reverse=True)
-                                cfg["services"]["Facebook🔥"][c_code]["ranges"] = {k: {} for k in sorted_r[:7]}
-                            
+                            cfg["services"]["Facebook🔥"][c_code]["ranges"] = new_ranges
                             set_setting("config", cfg)
                             
-                            if is_hot and range_usage_count[range_val] == 11: 
+                            # Broadcast if hot (Limit to once per 2 hours to avoid spam)
+                            now = time.time()
+                            if is_current_hot and (now - last_hot_broadcast.get(range_val, 0) > 7200): 
+                                last_hot_broadcast[range_val] = now
                                 c_info = cfg["services"]["Facebook🔥"][c_code]
-                                msg = f"🌸 *MOST ACTIVE RANGE!*\n\n#{c_code} | {c_info['name'].upper()} {c_info['flag']} - `/get {range_val}`\n🛠 Facebook🔥 LIVE •HITH TRAFFIC USE FAST"
+                                msg = f"🌸 *MOST ACTIVE RANGE!*\n\n#{c_code} | {c_info['name'].upper()} {c_info['flag']} - `/get {range_val}`\n🛠 Facebook🔥\n LIVE • HIGH TRAFFIC • USE FAST"
                                 for u in get_all_users():
                                     try: bot.send_message(u[0], msg, parse_mode="Markdown")
                                     except: pass
@@ -371,18 +380,18 @@ def start_cmd(message):
             conn.close()
             
     if not check_joined(message.chat.id): return force_join_msg(message.chat.id)
-    bot.send_message(message.chat.id, f"স্বাগতম {message.from_user.first_name}! 🤖", reply_markup=main_menu(message.chat.id))
+    bot.send_message(message.chat.id, f"🆆︎🅴︎🅻︎🅲︎🅾︎🅼︎🅴︎ {message.from_user.first_name}! 🤖", reply_markup=main_menu(message.chat.id))
 
 @bot.message_handler(func=lambda m: m.text == "🔙 Back to Home")
 def back_home(m): 
-    if check_registered(m): bot.send_message(m.chat.id, "🏠 হোমে ফিরে এসেছেন।", reply_markup=main_menu(m.chat.id))
+    if check_registered(m): bot.send_message(m.chat.id, "🏠 𝚁𝚎𝚝𝚞𝚛𝚗 𝚝𝚘 𝚑𝚘𝚖𝚎।", reply_markup=main_menu(m.chat.id))
 
 @bot.message_handler(func=lambda m: m.text == "👤 Profile")
 def profile_cmd(m):
     if not check_registered(m): return
     if not check_joined(m.chat.id): return force_join_msg(m.chat.id)
     user = get_user(m.chat.id)
-    bot.send_message(m.chat.id, f"👤 **প্রোফাইল**\n\n🔹 **নাম:** {user['first_name']}\n🔹 **আইডি:** `{user['user_id']}`\n💰 **ব্যালেন্স:** ৳{user['balance']}", parse_mode="Markdown")
+    bot.send_message(m.chat.id, f"👤 **𝐏𝐫𝐨𝐟𝐢𝐥𝐞**\n\n🔹 **ℕ𝕒𝕞𝕖:** {user['first_name']}\n🔹 **𝕌𝕚𝕕:** `{user['user_id']}`\n💰 **𝔹𝕒𝕝𝕒𝕟𝕔𝕖:** ৳{user['balance']}", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: m.text == "💬 Support")
 def support_cmd(m):
@@ -456,17 +465,17 @@ def process_wth_final(m, method, amount):
     if m.text == "🔙 Back to Home": return back_home(m)
     update_balance(m.chat.id, -amount)
     bot.send_message(m.chat.id, f"✅ উইথড্র রিকোয়েস্ট সফল!\n💳 {method}: ৳{amount}\n📱 Number: {m.text}", reply_markup=main_menu(m.chat.id))
-    bot.send_message(ADMIN_ID, f"🔔 **NEW WITHDRAW**\n👤 User: [{m.from_user.first_name}](tg://user?id={m.chat.id})\n💳 {method} ৳{amount}\n📱 Num: `{m.text}`", parse_mode="Markdown")
+    bot.send_message(ADMIN_ID, f"🔔 **NEW WITHDRAW**\n👤 User:[{m.from_user.first_name}](tg://user?id={m.chat.id})\n💳 {method} ৳{amount}\n📱 Num: `{m.text}`", parse_mode="Markdown")
 
 # ================= GET NUMBER / RANGE =================
 @bot.message_handler(func=lambda m: m.text == "☎️ Get Number")
 def get_number_start(m):
     if not check_registered(m) or not check_joined(m.chat.id): return
     cfg = get_setting("config", default_config)
-    if not cfg.get("services"): return bot.send_message(m.chat.id, "❌ কোনো সার্ভিস নেই।")
+    if not cfg.get("services"): return bot.send_message(m.chat.id, "❌ 𝐍𝐨 𝐒𝐞𝐫𝐯𝐢𝐜𝐞 𝐀𝐯𝐚𝐢𝐚𝐛𝐥𝐞!।")
     markup = InlineKeyboardMarkup(row_width=2)
     for srv in cfg["services"].keys(): markup.add(InlineKeyboardButton(srv, callback_data=f"getSrv_{srv}"))
-    bot.send_message(m.chat.id, "🔧 **কোন সার্ভিসের নাম্বার নিবেন?**", reply_markup=markup, parse_mode="Markdown")
+    bot.send_message(m.chat.id, "🔧 **𝐒𝐞𝐥𝐞𝐜𝐭 𝐘𝐨𝐮𝐫 𝐒𝐞𝐫𝐯𝐢𝐜𝐞?**", reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("getSrv_"))
 def select_country(call):
@@ -477,7 +486,7 @@ def select_country(call):
     for code, details in countries.items(): 
         markup.add(InlineKeyboardButton(f"{details.get('flag','🏳')} #{code} | {details.get('name','Unknown')}", callback_data=f"getCnt_{srv}_{code}"))
     markup.add(InlineKeyboardButton("🔙 Back", callback_data="back_srv"))
-    bot.edit_message_text("🌍 **দেশ সিলেক্ট করুন:**", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    bot.edit_message_text("🌍 **𝐒𝐞𝐥𝐞𝐜𝐭 𝐂𝐨𝐮𝐧𝐭𝐫𝐲:**", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_srv")
 def back_to_srv(call):
@@ -527,7 +536,7 @@ def fetch_number_logic(chat_id, msg_id, srv, code, c_details, range_val, msg_obj
     cfg = get_setting("config", default_config)
     reward = cfg.get("reward_per_otp", 0.25)
     
-    loading_text = "⏳ *নাম্বার খোঁজা হচ্ছে...*"
+    loading_text = "⏳ *𝚂𝚎𝚊𝚛𝚌𝚑𝚒𝚗𝚐 𝙽𝚞𝚖𝚋𝚎𝚛 𝙿𝚕𝚎𝚊𝚜𝚎 𝚠𝚊𝚒𝚝...*"
     if msg_id: bot.edit_message_text(loading_text, chat_id, msg_id, parse_mode="Markdown")
     else: msg_id = bot.send_message(chat_id, loading_text, parse_mode="Markdown").message_id
     
@@ -544,10 +553,10 @@ def fetch_number_logic(chat_id, msg_id, srv, code, c_details, range_val, msg_obj
         clean_num = str(raw_number).replace("+", "").strip()
         active_otp_checks[str(chat_id)] = clean_num 
         
-        text = f"┌── NUMBER VERIFIED ──┐\n✨ যাচাই সম্পন্ন\n🌍 দেশ ও দাম: {c_details['flag']} {c_details['name']} (৳{reward})\n\n📱 Number : `{clean_num}`\n\n🔑 OTP কোড: ⏳ অপেক্ষা করুন...\n└── NUMBER VERIFIED ──┘"
+        text = f"┌── 𝐍𝐔𝐌𝐁𝐄𝐑 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 ──┐\n✨ যাচাই সম্পন্ন\n🌍 দেশ ও দাম: {c_details['flag']} {c_details['name']} (৳{reward})\n\n📱 ℕ𝕦𝕞𝕓𝕖𝕣 : `{clean_num}`\n\n🔑 𝕆𝕥𝕡 কোড: ⏳ 𝚆𝙰𝙸𝚃..\n└── 𝐍𝐔𝐌𝐁𝐄𝐑 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 ──┘"
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("🆕 Same Range", callback_data=f"reRng_{srv}_{code}_{range_val}"))
-        if srv != "Custom Range" and code != "Unknown": markup.row(InlineKeyboardButton("🔙 Back to Ranges", callback_data=f"getCnt_{srv}_{code}"))
+        # Removed Back Button Here
         if cfg.get("force_group_url"): markup.row(InlineKeyboardButton("💬 OTP Group", url=cfg["force_group_url"]))
             
         bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=markup)
@@ -555,7 +564,7 @@ def fetch_number_logic(chat_id, msg_id, srv, code, c_details, range_val, msg_obj
     else: 
         markup = InlineKeyboardMarkup()
         if srv != "Custom Range" and code != "Unknown": markup.add(InlineKeyboardButton("🔙 Back to Ranges", callback_data=f"getCnt_{srv}_{code}"))
-        bot.edit_message_text("❌ নাম্বার পাওয়া যায়নি। অন্য রেঞ্জ ট্রাই করুন।", chat_id, msg_id, reply_markup=markup)
+        bot.edit_message_text("❌ ℕ𝕠 ℕ𝕦𝕞𝕓𝕖𝕣 𝕀𝕟 𝕋𝕙𝕚𝕤 ℝ𝕒𝕟𝕘𝕖।", chat_id, msg_id, reply_markup=markup)
 
 def auto_check_otp(chat_id, msg_id, number, srv, c_details, reward):
     uid = str(chat_id)
@@ -578,7 +587,9 @@ def auto_check_otp(chat_id, msg_id, number, srv, c_details, reward):
                     update_balance(uid, reward)
                     new_bal = get_user(uid)['balance']
                     
-                    text = f"🔰 {bot.get_me().first_name} | OTP RCV\n\n📞 Number: `{number}`\n🌐 Country: {c_details['name']}\n🔧 Service: {srv}\n\n📊 Status: 🔒 CLAIMED\n\n🔑 OTP Code: `{code}`\n\n\"{full_msg}\"\n\n💰 আপনার ব্যালেন্সে ৳{reward} যোগ হয়েছে!\nমোট ব্যালেন্স: ৳{new_bal}"
+                    # Short and Clean OTP Response
+                    text = f"✅ **𝐎𝐓𝐏 𝐑𝐄𝐂𝐄𝐕𝐈𝐄𝐃 !**\n\n📱 **𝙽𝚄𝙼𝙱𝙴𝚁:** `{number}`\n🔑 **Code:** `{code}`\n\n💬 **𝚂𝙼𝚂:** _{full_msg}_\n\n💰 **𝚁𝙰𝚆𝙰𝚁𝙳:** ৳{reward} a𝙰𝚊𝚍𝚍𝚎𝚍!\n💳 **𝙱𝙰𝙻𝙰𝙽𝙲𝙴:** ৳{new_bal}"
+                    
                     try:
                         bot.send_message(chat_id, text, parse_mode="Markdown")
                         bot.edit_message_text(f"✅ OTP Received for `{number}`.", chat_id, msg_id, parse_mode="Markdown")
