@@ -332,7 +332,7 @@ def console_monitor_thread():
                             
                             if is_hot and range_usage_count[range_val] == 11: 
                                 c_info = cfg["services"]["Facebook🔥"][c_code]
-                                msg = f"🌸 *MOST ACTIVE RANGE!*\n\n#{c_code} | {c_info['name'].upper()} {c_info['flag']} - `/get {range_val}`\n🛠 Facebook🔥 LIVE • USE FAST"
+                                msg = f"🌸 *MOST ACTIVE RANGE!*\n\n#{c_code} | {c_info['name'].upper()} {c_info['flag']} - `/get {range_val}`\n🛠 Facebook🔥 LIVE •HITH TRAFFIC USE FAST"
                                 for u in get_all_users():
                                     try: bot.send_message(u[0], msg, parse_mode="Markdown")
                                     except: pass
