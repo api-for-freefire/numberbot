@@ -25,7 +25,8 @@ STEX_LOGIN_URL = "https://stexsms.com/mapi/v1/mauth/login"
 bot = telebot.TeleBot(BOT_TOKEN)
 AUTH_TOKEN = ""
 posted_console_ids = deque(maxlen=1000)
-recent_fb_logs = deque(maxlen=1000) # নতুন রেঞ্জ লজিকের জন্য
+# recent_fb_logs এখন (timestamp, country_code, range_val) স্টোর করবে 
+recent_fb_logs = deque() 
 last_hot_broadcast = {} # ব্রডকাস্ট স্প্যাম কমানোর জন্য
 active_otp_checks = {} 
 db_lock = threading.Lock()
@@ -294,6 +295,7 @@ def console_monitor_thread():
             if res and res.status_code == 200:
                 logs = res.json().get("data", {}).get("logs",[])
                 cfg = get_setting("config", default_config)
+                now = time.time()
                 
                 for log in reversed(logs):
                     log_id = log.get("id")
@@ -305,51 +307,66 @@ def console_monitor_thread():
                     
                     if "X" not in range_val: range_val += "XXX"
                     
-                    # Auto Update Facebook🔥 Service (Dynamic Update Logic)
+                    # Auto Update Facebook🔥 Service 
                     if "facebook" in app_name.lower() or "fb" in app_name.lower():
                         c_code = get_country_from_range(range_val)
                         if c_code != "Unknown":
-                            recent_fb_logs.append((c_code, range_val))
-                            
-                            freqs = Counter([r for c, r in recent_fb_logs])
-                            c_code_ranges = set([r for c, r in recent_fb_logs if c == c_code])
-                            
-                            if c_code not in cfg["services"]["Facebook🔥"]:
-                                cfg["services"]["Facebook🔥"][c_code] = {
-                                    "name": SHORT_NAMES.get(c_code, {}).get("name", c_code), 
-                                    "flag": SHORT_NAMES.get(c_code, {}).get("flag", "🏳"), 
-                                    "ranges": {}
-                                }
-                            
-                            # Sort by frequency and take top 7
-                            sorted_r = sorted(c_code_ranges, key=lambda r: freqs[r], reverse=True)[:7]
-                            new_ranges = {}
-                            
-                            is_current_hot = False
-                            for r in sorted_r:
-                                is_hot = freqs[r] >= 6  # 6 is the threshold for 🔥
-                                r_name = f"🔥 {r}" if is_hot else r
-                                new_ranges[r_name] = {}
-                                if r == range_val and is_hot:
-                                    is_current_hot = True
-                            
-                            cfg["services"]["Facebook🔥"][c_code]["ranges"] = new_ranges
-                            set_setting("config", cfg)
-                            
-                            # Broadcast if hot (Limit to once per 2 hours to avoid spam)
-                            now = time.time()
-                            if is_current_hot and (now - last_hot_broadcast.get(range_val, 0) > 7200): 
-                                last_hot_broadcast[range_val] = now
-                                c_info = cfg["services"]["Facebook🔥"][c_code]
-                                msg = f"🌸 *MOST ACTIVE RANGE!*\n\n#{c_code} | {c_info['name'].upper()} {c_info['flag']} - `/get {range_val}`\n🛠 Facebook🔥\n LIVE • HIGH TRAFFIC • USE FAST"
-                                for u in get_all_users():
-                                    try: bot.send_message(u[0], msg, parse_mode="Markdown")
-                                    except: pass
+                            # টাইমস্ট্যাম্প সহ লগ সেভ করা
+                            recent_fb_logs.append((now, c_code, range_val))
 
-                        # Facebook Group Broadcast only
-                        msg = f"✅ 📘 {app_name} | 🌍 {country_str}\n\n📱Range: `{range_val}`\n\n🔑 Code: `{sms}` | {time_val}"
-                        try: bot.send_message(GROUP_ID, msg, parse_mode="Markdown")
-                        except: pass
+                    # Facebook Group Broadcast only
+                    msg = f"✅ 📘 {app_name} | 🌍 {country_str}\n\n📱Range: `{range_val}`\n\n🔑 Code: `{sms}` | {time_val}"
+                    try: bot.send_message(GROUP_ID, msg, parse_mode="Markdown")
+                    except: pass
+                
+                # ৫ মিনিটের (300 সেকেন্ড) বেশি পুরোনো ট্রাফিক রিমুভ করা
+                while recent_fb_logs and (now - recent_fb_logs[0][0]) > 300:
+                    recent_fb_logs.popleft()
+                
+                # কনসোলের লাইভ ডেটা থেকে নতুন করে রেঞ্জ তৈরি করা
+                freqs = Counter([r for _, _, r in recent_fb_logs])
+                live_ranges_by_country = {}
+                
+                for _, c, r in recent_fb_logs:
+                    if c not in live_ranges_by_country:
+                        live_ranges_by_country[c] = set()
+                    live_ranges_by_country[c].add(r)
+                
+                new_fb_service = {}
+                
+                for c_code, ranges in live_ranges_by_country.items():
+                    # ফ্রিকুয়েন্সি অনুসারে সাজানো (সর্বোচ্চ ৭টি রেঞ্জ)
+                    sorted_r = sorted(list(ranges), key=lambda x: freqs[x], reverse=True)[:7]
+                    new_ranges = {}
+                    
+                    for r in sorted_r:
+                        is_hot = freqs[r] >= 6  # যদি ৫ মিনিটে ৪ বারের বেশি ট্রাফিক থাকে
+                        r_name = f"🔥 {r}" if is_hot else r
+                        new_ranges[r_name] = {}
+                        
+                        # ব্রডকাস্ট যদি হট রেঞ্জ হয় (২ ঘণ্টায় একবার)
+                        if is_hot and (now - last_hot_broadcast.get(r, 0) > 7200): 
+                            last_hot_broadcast[r] = now
+                            c_info_name = SHORT_NAMES.get(c_code, {}).get("name", c_code)
+                            c_info_flag = SHORT_NAMES.get(c_code, {}).get("flag", "🏳")
+                            msg = f"🌸 *MOST ACTIVE RANGE!*\n\n#{c_code} | {c_info_name.upper()} {c_info_flag} - `/get {r}`\n🛠 Facebook🔥\n LIVE • HIGH TRAFFIC • USE FAST"
+                            for u in get_all_users():
+                                try: bot.send_message(u[0], msg, parse_mode="Markdown")
+                                except: pass
+                                
+                    new_fb_service[c_code] = {
+                        "name": SHORT_NAMES.get(c_code, {}).get("name", c_code), 
+                        "flag": SHORT_NAMES.get(c_code, {}).get("flag", "🏳"), 
+                        "ranges": new_ranges
+                    }
+                
+                # ডেটাবেজ তখনই আপডেট হবে যদি নতুন কনসোল ডেটায় কোনো পরিবর্তন থাকে
+                if cfg.get("services", {}).get("Facebook🔥") != new_fb_service:
+                    if "services" not in cfg:
+                        cfg["services"] = {}
+                    cfg["services"]["Facebook🔥"] = new_fb_service
+                    set_setting("config", cfg)
+                    
         except Exception as e: pass
         time.sleep(5)
 
@@ -398,7 +415,7 @@ def support_cmd(m):
     if not check_registered(m): return
     cfg = get_setting("config", default_config)
     markup = InlineKeyboardMarkup().add(InlineKeyboardButton("💬 Support Chat", url=cfg.get("support_url", "https://t.me/MEeASDF")))
-    bot.send_message(m.chat.id, "যেকোনো প্রয়োজনে আমাদের সাপোর্ট টিমের সাথে যোগাযোগ করুন:\n\n👨‍💻 **Bot Developer:** MD SADIK", reply_markup=markup, parse_mode="Markdown")
+    bot.send_message(m.chat.id, "যেকোনো প্রয়োজনে আমাদের সাপোর্ট টিমের সাথে যোগাযোগ করুন:\n\n👨‍💻 **Bot Developer シ︎**MD SADIK", reply_markup=markup, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: m.text == "🔐 2FA")
 def ask_2fa(m):
@@ -411,7 +428,7 @@ def process_2fa(m):
     secret = m.text.replace(" ", "").upper()
     try:
         code = pyotp.TOTP(secret).now()
-        bot.send_message(m.chat.id, f"✅ **আপনার OTP তৈরি হয়েছে!**\n\n🔑 Code: `{code}`", parse_mode='Markdown', reply_markup=main_menu(m.chat.id))
+        bot.send_message(m.chat.id, f"✅ **𝐘𝐨𝐮𝐫 𝐎𝐓𝐏 𝐆𝐞𝐧𝐞𝐫𝐚𝐭𝐞 𝐒𝐮𝐜𝐜𝐞𝐬𝐬...!\n 𝐓𝐨𝐩 𝐅𝐨𝐫 𝐂𝐨𝐩𝐲**\n\n🔑 𝐂𝐨𝐝𝐞: `{code}`", parse_mode='Markdown', reply_markup=main_menu(m.chat.id))
     except:
         bot.send_message(m.chat.id, "❌ Error: Secret Key টি সঠিক নয়।", reply_markup=main_menu(m.chat.id))
 
@@ -482,6 +499,10 @@ def select_country(call):
     srv = call.data.split("_")[1]
     cfg = get_setting("config", default_config)
     countries = cfg.get("services", {}).get(srv, {})
+    
+    if not countries: 
+        return bot.answer_callback_query(call.id, "❌ এই সার্ভিসে বর্তমানে কোনো দেশ অ্যাক্টিভ নেই!", show_alert=True)
+        
     markup = InlineKeyboardMarkup(row_width=2)
     for code, details in countries.items(): 
         markup.add(InlineKeyboardButton(f"{details.get('flag','🏳')} #{code} | {details.get('name','Unknown')}", callback_data=f"getCnt_{srv}_{code}"))
@@ -498,11 +519,19 @@ def back_to_srv(call):
 def select_range(call):
     _, srv, code = call.data.split("_")
     cfg = get_setting("config", default_config)
-    ranges = cfg.get("services", {}).get(srv, {}).get(code, {}).get("ranges", {})
+    
+    country_data = cfg.get("services", {}).get(srv, {}).get(code)
+    if not country_data:
+        return bot.answer_callback_query(call.id, "❌ 𝐍𝐨 𝐦𝐨𝐫𝐞 𝐚𝐥𝐢𝐯𝐞 𝐭𝐡𝐢𝐬 𝐂𝐨𝐮𝐧𝐭𝐞𝐫𝐲!", show_alert=True)
+        
+    ranges = country_data.get("ranges", {})
+    if not ranges:
+        return bot.answer_callback_query(call.id, "❌ 𝐍𝐨 𝐦𝐨𝐫𝐞 𝐚𝐥𝐢𝐯𝐞 𝐭𝐡𝐢𝐬 𝐫𝐚𝐧𝐠𝐞!", show_alert=True)
+        
     markup = InlineKeyboardMarkup(row_width=2)
     for r in ranges.keys(): markup.add(InlineKeyboardButton(f"{r}", callback_data=f"getRng_{srv}_{code}_{r}"))
     markup.add(InlineKeyboardButton("🔙 Back", callback_data=f"getSrv_{srv}"))
-    bot.edit_message_text("🔢 **রেঞ্জ সিলেক্ট করুন:**", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    bot.edit_message_text("🔢 **𝐒𝐞𝐥𝐞𝐜𝐭 𝐑𝐚𝐧𝐠𝐞:**", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: m.text == "🔢 Get Range")
 def ask_get_range(m):
@@ -526,10 +555,15 @@ def cmd_get_range(m):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("getRng_") or call.data.startswith("reRng_"))
 def fetch_number(call):
-    parts = call.data.split("_")
+    # split-এর প্যারামিটার ফিক্স করে দেওয়া হয়েছে যাতে রেঞ্জের নামে "_" থাকলেও সমস্যা না হয়
+    parts = call.data.split("_", 3)
     srv, code, range_val = parts[1], parts[2], parts[3].replace("🔥 ", "")
     cfg = get_setting("config", default_config)
-    c_details = cfg["services"][srv][code]
+    
+    c_details = cfg.get("services", {}).get(srv, {}).get(code)
+    if not c_details:
+        return bot.answer_callback_query(call.id, "❌ 𝐒𝐨𝐦𝐞𝐭𝐡𝐢𝐠 𝐔𝐧𝐚𝐯𝐚𝐢𝐚𝐛𝐥𝐞..!", show_alert=True)
+        
     fetch_number_logic(call.message.chat.id, call.message.message_id, srv, code, c_details, range_val)
 
 def fetch_number_logic(chat_id, msg_id, srv, code, c_details, range_val, msg_obj=None):
@@ -542,7 +576,7 @@ def fetch_number_logic(chat_id, msg_id, srv, code, c_details, range_val, msg_obj
     
     res = make_api_request("POST", "https://stexsms.com/mapi/v1/mdashboard/getnum/number", {"range": range_val})
     raw_number = None
-    if res and res.status_code in [200, 201]:
+    if res and res.status_code in[200, 201]:
         try: raw_number = res.json().get('number') or res.json().get('data', {}).get('number')
         except: pass
         if not raw_number:
@@ -553,10 +587,9 @@ def fetch_number_logic(chat_id, msg_id, srv, code, c_details, range_val, msg_obj
         clean_num = str(raw_number).replace("+", "").strip()
         active_otp_checks[str(chat_id)] = clean_num 
         
-        text = f"┌── 𝐍𝐔𝐌𝐁𝐄𝐑 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 ──┐\n✨ যাচাই সম্পন্ন\n🌍 দেশ ও দাম: {c_details['flag']} {c_details['name']} (৳{reward})\n\n📱 ℕ𝕦𝕞𝕓𝕖𝕣 : `{clean_num}`\n\n🔑 𝕆𝕥𝕡 কোড: ⏳ 𝚆𝙰𝙸𝚃..\n└── 𝐍𝐔𝐌𝐁𝐄𝐑 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 ──┘"
+        text = f"┌── 𝐍𝐔𝐌𝐁𝐄𝐑 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 ──┐\n✨ যাচাই সম্পন্ন\n🌍 দেশ ও দাম: {c_details['flag']} {c_details['name']} (৳{reward})\n\n𖠌 ℕ𝕦𝕞𝕓𝕖𝕣 : ➪`{clean_num}`\n\n🔑 𝕆𝕥𝕡 : ⏳ 𝚆𝙰𝙸𝚃..\n└── 𝐍𝐔𝐌𝐁𝐄𝐑 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 ──┘"
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("🆕 Same Range", callback_data=f"reRng_{srv}_{code}_{range_val}"))
-        # Removed Back Button Here
         if cfg.get("force_group_url"): markup.row(InlineKeyboardButton("💬 OTP Group", url=cfg["force_group_url"]))
             
         bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=markup)
@@ -587,16 +620,15 @@ def auto_check_otp(chat_id, msg_id, number, srv, c_details, reward):
                     update_balance(uid, reward)
                     new_bal = get_user(uid)['balance']
                     
-                    # Short and Clean OTP Response
-                    text = f"✅ **𝐎𝐓𝐏 𝐑𝐄𝐂𝐄𝐕𝐈𝐄𝐃 !**\n\n📱 **𝙽𝚄𝙼𝙱𝙴𝚁:** `{number}`\n🔑 **Code:** `{code}`\n\n💬 **𝚂𝙼𝚂:** _{full_msg}_\n\n💰 **𝚁𝙰𝚆𝙰𝚁𝙳:** ৳{reward} a𝙰𝚊𝚍𝚍𝚎𝚍!\n💳 **𝙱𝙰𝙻𝙰𝙽𝙲𝙴:** ৳{new_bal}"
+                    text = f"✅ **𝐎𝐓𝐏 𝐑𝐄𝐂𝐄𝐕𝐈𝐄𝐃 !**\n\n📱 **𝙽𝚄𝙼𝙱𝙴𝚁:** `{number}`\n ᴛᴀᴘ ᴛᴏ ᴄᴏᴘʏ \n🔑 **𝙲𝙾𝙳𝙴:**☞︎`{code}`︎☜︎\n\n💬 **𝚂𝙼𝚂:** _{full_msg}_\n\n💰 **𝚁𝙰𝚆𝙰𝚁𝙳:** ৳{reward} 𝚊𝚍𝚍𝚎𝚍!\n💳 **𝙱𝙰𝙻𝙰𝙽𝙲𝙴:** ৳{new_bal}"
                     
                     try:
                         bot.send_message(chat_id, text, parse_mode="Markdown")
-                        bot.edit_message_text(f"✅ OTP Received for `{number}`.", chat_id, msg_id, parse_mode="Markdown")
+                        bot.edit_message_text(f"✅ 𝐎𝐓𝐏 𝐑𝐞𝐜𝐞𝐢𝐯𝐞𝐝 𝐅𝐨𝐫  `{number}`.", chat_id, msg_id, parse_mode="Markdown")
                     except: pass
                     return
                 elif status == "failed":
-                    try: bot.edit_message_text(f"❌ নাম্বার বাতিল!\n📱 `{number}`", chat_id, msg_id)
+                    try: bot.edit_message_text(f"❌ 𝐍𝐮𝐦𝐛𝐞𝐫 𝐂𝐚𝐧𝐜𝐥𝐞..!\n📱 `{number}`", chat_id, msg_id)
                     except: pass
                     return
 
@@ -856,7 +888,7 @@ if __name__ == "__main__":
     refresh_jwt_token()
     threading.Thread(target=console_monitor_thread, daemon=True).start()
     threading.Thread(target=run_flask, daemon=True).start()
-    print("✅ Advanced Bot with SQLite is LIVE! NO missing functions.")
+    print("✅ Advanced Bot is LIVE! Auto Range fully synced with console logs.")
     while True:
         try: bot.infinity_polling(timeout=20, long_polling_timeout=15)
         except Exception as e: time.sleep(5)
