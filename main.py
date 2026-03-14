@@ -307,17 +307,31 @@ def console_monitor_thread():
                     
                     if "X" not in range_val: range_val += "XXX"
                     
-                    # Auto Update Facebook🔥 Service 
+ # Auto Update Facebook🔥 Service & Group Broadcast
                     if "facebook" in app_name.lower() or "fb" in app_name.lower():
                         c_code = get_country_from_range(range_val)
+                        
+                        # Country Flag ও Name অটোমেটিক ডিটেক্ট করা
+                        c_flag = SHORT_NAMES.get(c_code, {}).get("flag", "🏳️") if c_code != "Unknown" else "🏳️"
+                        c_name = SHORT_NAMES.get(c_code, {}).get("name", country_str) if c_code != "Unknown" else country_str
+                        
                         if c_code != "Unknown":
-                            # টাইমস্ট্যাম্প সহ লগ সেভ করা
+                            # টাইমস্ট্যাম্প সহ রেঞ্জ সেভ করা
                             recent_fb_logs.append((now, c_code, range_val))
 
-                    # Facebook Group Broadcast only
-                    msg = f"✅ 📘 {app_name} | 🌍 {country_str}\n\n📱Range: `{range_val}`\n\n🔑 Code: `{sms}` | {time_val}"
-                    try: bot.send_message(GROUP_ID, msg, parse_mode="Markdown")
-                    except: pass
+                        # Facebook Group Broadcast (প্রিমিয়াম ডিজাইন)
+                        msg = (
+                            f"┌── 📘 **{app_name.upper()}** ──┐\n"
+                            f"🌍 **𝐂𝐨𝐮𝐧𝐭𝐫𝐲:** {c_flag} {c_name}\n"
+                            f"📱 **𝐑𝐚𝐧𝐠𝐞:** `{range_val}`\n"
+                            f"🔑 **𝐌𝐚𝐬𝐬𝐞𝐠𝐞:** `{sms}`\n"
+                            f"⏱ **𝐓𝐢𝐦𝐞:** {time_val}\n"
+                            f"└────────────────────┘"
+                        )
+                        try: 
+                            bot.send_message(GROUP_ID, msg, parse_mode="Markdown")
+                        except: 
+                            pass
                 
                 # ৫ মিনিটের (300 সেকেন্ড) বেশি পুরোনো ট্রাফিক রিমুভ করা
                 while recent_fb_logs and (now - recent_fb_logs[0][0]) > 300:
