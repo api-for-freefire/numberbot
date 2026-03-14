@@ -634,7 +634,7 @@ def auto_check_otp(chat_id, msg_id, number, srv, c_details, reward):
                     update_balance(uid, reward)
                     new_bal = get_user(uid)['balance']
                     
-                    text = f"✅ **𝐎𝐓𝐏 𝐑𝐄𝐂𝐄𝐕𝐈𝐄𝐃 !**\n\n📱 **𝙽𝚄𝙼𝙱𝙴𝚁:** `{number}`\n ᴛᴀᴘ ᴛᴏ ᴄᴏᴘʏ \n🔑 **𝙲𝙾𝙳𝙴:**☞︎`{code}`︎☜︎\n\n💬 **𝚂𝙼𝚂:** _{full_msg}_\n\n💰 **𝚁𝙰𝚆𝙰𝚁𝙳:** ৳{reward} 𝚊𝚍𝚍𝚎𝚍!\n💳 **𝙱𝙰𝙻𝙰𝙽𝙲𝙴:** ৳{new_bal}"
+                    text = f"✅ **𝐎𝐓𝐏 𝐑𝐄𝐂𝐄𝐕𝐈𝐄𝐃 !**\n\n📱 **𝙽𝚄𝙼𝙱𝙴𝚁:** `{number}`\n ᴛᴀᴘ ᴛᴏ ᴄᴏᴘʏ \n🔑 **𝙲𝙾𝙳𝙴:**`{code}`︎\n\n💬 **𝚂𝙼𝚂:** _{full_msg}_\n\n💰 **𝚁𝙰𝚆𝙰𝚁𝙳:** ৳{reward} 𝚊𝚍𝚍𝚎𝚍!\n💳 **𝙱𝙰𝙻𝙰𝙽𝙲𝙴:** ৳{new_bal}"
                     
                     try:
                         bot.send_message(chat_id, text, parse_mode="Markdown")
